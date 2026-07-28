@@ -1,0 +1,38 @@
+{
+	"schemaVersion": 1,
+	"id": "quickstack",
+	"version": "${version}",
+	"name": "QuickStack",
+	"description": "Quickly stack items from your inventory into nearby chests with a single click.",
+	"authors": [
+		"faticc"
+	],
+	"contact": {
+		"homepage": "https://github.com/faticc/quickstack",
+		"sources": "https://github.com/faticc/quickstack"
+	},
+	"license": "MIT",
+	"icon": "assets/quickstack/icon.png",
+	"environment": "",
+	"entrypoints": {
+		"main": [
+			{
+				"value": "io.github.faticc.QuickStack",
+				"adapter": "kotlin"
+			}
+		],
+		"client": [
+			{
+				"value": "io.github.faticc.client.QuickStackClient",
+				"adapter": "kotlin"
+			}
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~26.2",
+		"java": ">=25",
+		"fabric-api": "",
+		"fabric-language-kotlin": "*"
+	}
+}
