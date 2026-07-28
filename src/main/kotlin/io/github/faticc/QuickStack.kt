@@ -7,12 +7,15 @@ import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking
 import net.minecraft.world.level.block.entity.BlockEntity
 import net.minecraft.world.Container
 import net.minecraft.world.item.ItemStack
+import net.minecraft.world.item.Items
 import net.minecraft.server.level.ServerPlayer
 import net.minecraft.resources.Identifier
 import net.minecraft.core.BlockPos
+import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.world.phys.AABB
 import net.minecraft.world.level.block.ChestBlock
 import net.minecraft.world.level.block.entity.ChestBlockEntity
+import net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity
 import org.slf4j.LoggerFactory
 
 object QuickStack : ModInitializer {
@@ -40,7 +43,9 @@ object QuickStack : ModInitializer {
 		val pos = player.blockPosition()
 		val searchBox = AABB(pos).inflate(SEARCH_RADIUS)
 
-		val inventories = mutableSetOf<Container>()
+		val regularInventories = mutableSetOf<Container>()
+		val furnaces = mutableSetOf<AbstractFurnaceBlockEntity>()
+
 		for (x in searchBox.minX.toInt()..searchBox.maxX.toInt()) {
 			for (y in searchBox.minY.toInt()..searchBox.maxY.toInt()) {
 				for (z in searchBox.minZ.toInt()..searchBox.maxZ.toInt()) {
@@ -48,13 +53,15 @@ object QuickStack : ModInitializer {
 					val blockState = level.getBlockState(blockPos)
 					val blockEntity: BlockEntity? = level.getBlockEntity(blockPos)
 
-					if (blockEntity is Container) {
+					if (blockEntity is AbstractFurnaceBlockEntity) {
+						furnaces.add(blockEntity)
+					} else if (blockEntity is Container) {
 						val realContainer: Container = if (blockEntity is ChestBlockEntity && blockState.block is ChestBlock) {
 							ChestBlock.getContainer(blockState.block as ChestBlock, blockState, level, blockPos, true) ?: blockEntity
 						} else {
 							blockEntity
 						}
-						inventories.add(realContainer)
+						regularInventories.add(realContainer)
 					}
 				}
 			}
@@ -66,7 +73,7 @@ object QuickStack : ModInitializer {
 			var playerStack = playerInv.getItem(i)
 			if (playerStack.isEmpty) continue
 
-			for (chestInv in inventories) {
+			for (chestInv in regularInventories) {
 				if (playerStack.isEmpty) break
 
 				if (chestContainsItem(chestInv, playerStack)) {
@@ -75,7 +82,60 @@ object QuickStack : ModInitializer {
 					playerStack = remainder
 				}
 			}
+
+			if (!playerStack.isEmpty) {
+				val isCoal = playerStack.item == Items.COAL || playerStack.item == Items.CHARCOAL
+				val isOreItem = isOre(playerStack)
+
+				if (isCoal || isOreItem) {
+					for (furnace in furnaces) {
+						if (playerStack.isEmpty) break
+
+						if (isCoal) {
+							playerStack = insertIntoFurnaceSlot(furnace, 1, playerStack)
+						}
+
+						if (isOreItem && !playerStack.isEmpty) {
+							playerStack = insertIntoFurnaceSlot(furnace, 0, playerStack)
+						}
+
+						playerInv.setItem(i, playerStack)
+					}
+				}
+			}
 		}
+	}
+
+	private fun isOre(stack: ItemStack): Boolean {
+		val path = BuiltInRegistries.ITEM.getKey(stack.item).path
+		return path.contains("ore") || path.contains("raw_") || path.contains("ancient_debris")
+	}
+
+
+	private fun insertIntoFurnaceSlot(furnace: AbstractFurnaceBlockEntity, slot: Int, stack: ItemStack): ItemStack {
+		val remainder = stack.copy()
+		val slotStack = furnace.getItem(slot)
+
+		if (!slotStack.isEmpty && ItemStack.isSameItemSameComponents(slotStack, remainder) && slotStack.count < slotStack.maxStackSize) {
+			val spaceLeft = slotStack.maxStackSize - slotStack.count
+			val amountToMove = minOf(spaceLeft, remainder.count)
+
+			slotStack.grow(amountToMove)
+			remainder.shrink(amountToMove)
+			furnace.setChanged()
+		}
+
+		else if (slotStack.isEmpty) {
+			val amountToMove = minOf(remainder.count, furnace.maxStackSize)
+			val newStack = remainder.copy()
+			newStack.count = amountToMove
+
+			furnace.setItem(slot, newStack)
+			remainder.shrink(amountToMove)
+			furnace.setChanged()
+		}
+
+		return remainder
 	}
 
 	private fun chestContainsItem(inventory: Container, stack: ItemStack): Boolean {
