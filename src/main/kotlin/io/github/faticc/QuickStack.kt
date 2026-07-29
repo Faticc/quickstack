@@ -4,27 +4,25 @@ import io.github.faticc.network.QuickStackPacket
 import net.fabricmc.api.ModInitializer
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking
-import net.minecraft.world.level.block.entity.BlockEntity
+import net.minecraft.core.registries.BuiltInRegistries
+import net.minecraft.resources.Identifier
+import net.minecraft.server.level.ServerPlayer
 import net.minecraft.world.Container
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
-import net.minecraft.server.level.ServerPlayer
-import net.minecraft.resources.Identifier
-import net.minecraft.core.BlockPos
-import net.minecraft.core.registries.BuiltInRegistries
-import net.minecraft.world.phys.AABB
 import net.minecraft.world.level.block.ChestBlock
-import net.minecraft.world.level.block.entity.ChestBlockEntity
 import net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity
+import net.minecraft.world.level.block.entity.ChestBlockEntity
 import org.slf4j.LoggerFactory
 
 object QuickStack : ModInitializer {
 	const val MOD_ID: String = "quickstack"
 	private val LOGGER = LoggerFactory.getLogger(MOD_ID)
-	const val SEARCH_RADIUS = 10.0
+
+	const val SEARCH_RADIUS_BLOCKS = 16.0
 
 	override fun onInitialize() {
-		LOGGER.info("Initializing QuickStack mod...")
+		LOGGER.info("Initializing QuickStack mod (Chunk-Optimized)...")
 
 		PayloadTypeRegistry.serverboundPlay().register(QuickStackPacket.ID, QuickStackPacket.CODEC)
 
@@ -40,28 +38,40 @@ object QuickStack : ModInitializer {
 
 	private fun performQuickStack(player: ServerPlayer) {
 		val level = player.level()
-		val pos = player.blockPosition()
-		val searchBox = AABB(pos).inflate(SEARCH_RADIUS)
+		val playerPos = player.blockPosition()
+
+		val playerChunkX = playerPos.x shr 4
+		val playerChunkZ = playerPos.z shr 4
+
+		val radiusSqr = SEARCH_RADIUS_BLOCKS * SEARCH_RADIUS_BLOCKS
 
 		val regularInventories = mutableSetOf<Container>()
 		val furnaces = mutableSetOf<AbstractFurnaceBlockEntity>()
 
-		for (x in searchBox.minX.toInt()..searchBox.maxX.toInt()) {
-			for (y in searchBox.minY.toInt()..searchBox.maxY.toInt()) {
-				for (z in searchBox.minZ.toInt()..searchBox.maxZ.toInt()) {
-					val blockPos = BlockPos(x, y, z)
-					val blockState = level.getBlockState(blockPos)
-					val blockEntity: BlockEntity? = level.getBlockEntity(blockPos)
+		for (cx in (playerChunkX - 1)..(playerChunkX + 1)) {
+			for (cz in (playerChunkZ - 1)..(playerChunkZ + 1)) {
 
-					if (blockEntity is AbstractFurnaceBlockEntity) {
-						furnaces.add(blockEntity)
-					} else if (blockEntity is Container) {
-						val realContainer: Container = if (blockEntity is ChestBlockEntity && blockState.block is ChestBlock) {
-							ChestBlock.getContainer(blockState.block as ChestBlock, blockState, level, blockPos, true) ?: blockEntity
-						} else {
-							blockEntity
+				if (level.hasChunk(cx, cz)) {
+					val chunk = level.getChunk(cx, cz)
+
+					for (blockEntity in chunk.blockEntities.values) {
+
+						if (blockEntity.blockPos.distSqr(playerPos) <= radiusSqr) {
+
+							val blockState = blockEntity.blockState
+
+							if (blockEntity is AbstractFurnaceBlockEntity) {
+								furnaces.add(blockEntity)
+							} else if (blockEntity is Container) {
+								val pos = blockEntity.blockPos
+								val realContainer: Container = if (blockEntity is ChestBlockEntity && blockState.block is ChestBlock) {
+									ChestBlock.getContainer(blockState.block as ChestBlock, blockState, level, pos, true) ?: blockEntity
+								} else {
+									blockEntity
+								}
+								regularInventories.add(realContainer)
+							}
 						}
-						regularInventories.add(realContainer)
 					}
 				}
 			}
