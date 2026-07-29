@@ -4,23 +4,27 @@ import io.github.faticc.network.QuickStackPacket
 import net.fabricmc.api.ModInitializer
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking
+import net.minecraft.core.BlockPos
 import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.resources.Identifier
 import net.minecraft.server.level.ServerPlayer
+import net.minecraft.tags.ItemTags
 import net.minecraft.world.Container
 import net.minecraft.world.item.ItemStack
-import net.minecraft.world.item.Items
 import net.minecraft.world.level.block.ChestBlock
 import net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity
 import net.minecraft.world.level.block.entity.ChestBlockEntity
+import net.minecraft.world.level.block.state.properties.ChestType
 import org.slf4j.LoggerFactory
+import java.util.concurrent.Executors
+import kotlin.math.abs
 
 object QuickStack : ModInitializer {
 	const val MOD_ID: String = "quickstack"
 	private val LOGGER = LoggerFactory.getLogger(MOD_ID)
 
-	const val SEARCH_RADIUS_BLOCKS = 16.0
-
+	const val RADIUS_HORIZONTAL = 20.0
+	const val RADIUS_VERTICAL = 10.0
 	override fun onInitialize() {
 		LOGGER.info("Initializing QuickStack mod...")
 
@@ -37,47 +41,67 @@ object QuickStack : ModInitializer {
 	fun id(path: String): Identifier = Identifier.fromNamespaceAndPath(MOD_ID, path)
 
 	private fun performQuickStack(player: ServerPlayer) {
+		val playerInv = player.inventory
+
+		var isMainInventoryEmpty = true
+		for (i in 9 until 36) {
+			if (!playerInv.getItem(i).isEmpty) {
+				isMainInventoryEmpty = false
+				break
+			}
+		}
+		if (isMainInventoryEmpty) return
+
 		val level = player.level()
 		val playerPos = player.blockPosition()
-
 		val playerChunkX = playerPos.x shr 4
 		val playerChunkZ = playerPos.z shr 4
-
-		val radiusSqr = SEARCH_RADIUS_BLOCKS * SEARCH_RADIUS_BLOCKS
+		val horizontalRadiusSqr = RADIUS_HORIZONTAL * RADIUS_HORIZONTAL
 
 		val regularInventories = mutableSetOf<Container>()
 		val furnaces = mutableSetOf<AbstractFurnaceBlockEntity>()
+		val processedPositions = mutableSetOf<BlockPos>()
 
 		for (cx in (playerChunkX - 1)..(playerChunkX + 1)) {
 			for (cz in (playerChunkZ - 1)..(playerChunkZ + 1)) {
+				if (!level.hasChunk(cx, cz)) continue
+				val chunk = level.getChunk(cx, cz)
 
-				if (level.hasChunk(cx, cz)) {
-					val chunk = level.getChunk(cx, cz)
+				for (blockEntity in chunk.blockEntities.values) {
+					val pos = blockEntity.blockPos
+					if (!processedPositions.add(pos)) continue // Уже обработали
 
-					for (blockEntity in chunk.blockEntities.values) {
+					val dx = pos.x - playerPos.x
+					val dz = pos.z - playerPos.z
+					if (dx * dx + dz * dz > horizontalRadiusSqr) continue
+					if (abs(pos.y - playerPos.y) > RADIUS_VERTICAL) continue
 
-						if (blockEntity.blockPos.distSqr(playerPos) <= radiusSqr) {
+					val blockState = blockEntity.blockState
 
-							val blockState = blockEntity.blockState
-
-							if (blockEntity is AbstractFurnaceBlockEntity) {
-								furnaces.add(blockEntity)
-							} else if (blockEntity is Container) {
-								val pos = blockEntity.blockPos
-								val realContainer: Container = if (blockEntity is ChestBlockEntity && blockState.block is ChestBlock) {
-									ChestBlock.getContainer(blockState.block as ChestBlock, blockState, level, pos, true) ?: blockEntity
-								} else {
-									blockEntity
+					when (blockEntity) {
+						is AbstractFurnaceBlockEntity -> {
+							furnaces.add(blockEntity)
+						}
+						is ChestBlockEntity -> {
+							if (blockState.block is ChestBlock) {
+								val chestType = blockState.getValue(ChestBlock.TYPE)
+								if (chestType != ChestType.SINGLE) {
+									val connectedDir = ChestBlock.getConnectedDirection(blockState)
+									processedPositions.add(pos.relative(connectedDir))
 								}
+
+								val chestBlock = blockState.block as ChestBlock
+								val realContainer = ChestBlock.getContainer(chestBlock, blockState, level, pos, true) ?: blockEntity
 								regularInventories.add(realContainer)
 							}
+						}
+						is Container -> {
+							regularInventories.add(blockEntity)
 						}
 					}
 				}
 			}
 		}
-
-		val playerInv = player.inventory
 
 		for (i in 9 until 36) {
 			var playerStack = playerInv.getItem(i)
@@ -85,16 +109,13 @@ object QuickStack : ModInitializer {
 
 			for (chestInv in regularInventories) {
 				if (playerStack.isEmpty) break
-
 				if (chestContainsItem(chestInv, playerStack)) {
-					val remainder = insertIntoInventory(chestInv, playerStack)
-					playerInv.setItem(i, remainder)
-					playerStack = remainder
+					playerStack = insertIntoInventory(chestInv, playerStack)
 				}
 			}
 
 			if (!playerStack.isEmpty) {
-				val isCoal = playerStack.item == Items.COAL || playerStack.item == Items.CHARCOAL
+				val isCoal = playerStack.`is`(ItemTags.COALS)
 				val isOreItem = isOre(playerStack)
 
 				if (isCoal || isOreItem) {
@@ -104,54 +125,53 @@ object QuickStack : ModInitializer {
 						if (isCoal) {
 							playerStack = insertIntoFurnaceSlot(furnace, 1, playerStack)
 						}
-
 						if (isOreItem && !playerStack.isEmpty) {
 							playerStack = insertIntoFurnaceSlot(furnace, 0, playerStack)
 						}
-
-						playerInv.setItem(i, playerStack)
 					}
 				}
 			}
+
+			playerInv.setItem(i, playerStack)
 		}
 	}
 
 	private fun isOre(stack: ItemStack): Boolean {
-		val path = BuiltInRegistries.ITEM.getKey(stack.item).path
-		return path.contains("ore") || path.contains("raw_") || path.contains("ancient_debris")
-	}
-
-
-	private fun insertIntoFurnaceSlot(furnace: AbstractFurnaceBlockEntity, slot: Int, stack: ItemStack): ItemStack {
-		val remainder = stack.copy()
-		val slotStack = furnace.getItem(slot)
-
-		if (!slotStack.isEmpty && ItemStack.isSameItemSameComponents(slotStack, remainder) && slotStack.count < slotStack.maxStackSize) {
-			val spaceLeft = slotStack.maxStackSize - slotStack.count
-			val amountToMove = minOf(spaceLeft, remainder.count)
-
-			slotStack.grow(amountToMove)
-			remainder.shrink(amountToMove)
-			furnace.setChanged()
+		val hasOreTag = stack.tags().anyMatch { tagKey ->
+			val tagPath = tagKey.location().path
+			tagPath.contains("ore") || tagPath.contains("raw_materials")
 		}
 
-		else if (slotStack.isEmpty) {
-			val amountToMove = minOf(remainder.count, furnace.maxStackSize)
-			val newStack = remainder.copy()
+		val path = BuiltInRegistries.ITEM.getKey(stack.item).path
+		return hasOreTag || path.contains("ore") || path.contains("raw_") || path.contains("ancient_debris")
+	}
+
+	private fun insertIntoFurnaceSlot(furnace: AbstractFurnaceBlockEntity, slot: Int, stack: ItemStack): ItemStack {
+		val slotStack = furnace.getItem(slot)
+
+		if (!slotStack.isEmpty && ItemStack.isSameItemSameComponents(slotStack, stack) && slotStack.count < slotStack.maxStackSize) {
+			val spaceLeft = slotStack.maxStackSize - slotStack.count
+			val amountToMove = minOf(spaceLeft, stack.count)
+
+			slotStack.grow(amountToMove)
+			stack.shrink(amountToMove)
+			furnace.setChanged()
+		} else if (slotStack.isEmpty) {
+			val amountToMove = minOf(stack.count, furnace.maxStackSize)
+			val newStack = stack.copy()
 			newStack.count = amountToMove
 
 			furnace.setItem(slot, newStack)
-			remainder.shrink(amountToMove)
+			stack.shrink(amountToMove)
 			furnace.setChanged()
 		}
 
-		return remainder
+		return stack
 	}
 
 	private fun chestContainsItem(inventory: Container, stack: ItemStack): Boolean {
 		for (i in 0 until inventory.containerSize) {
-			val slotStack = inventory.getItem(i)
-			if (ItemStack.isSameItemSameComponents(slotStack, stack)) {
+			if (ItemStack.isSameItemSameComponents(inventory.getItem(i), stack)) {
 				return true
 			}
 		}
@@ -159,35 +179,33 @@ object QuickStack : ModInitializer {
 	}
 
 	private fun insertIntoInventory(inventory: Container, stack: ItemStack): ItemStack {
-		val remainder = stack.copy()
-
 		for (i in 0 until inventory.containerSize) {
-			if (remainder.isEmpty) break
+			if (stack.isEmpty) break
 			val slotStack = inventory.getItem(i)
 
-			if (ItemStack.isSameItemSameComponents(slotStack, remainder) && slotStack.count < slotStack.maxStackSize) {
+			if (ItemStack.isSameItemSameComponents(slotStack, stack) && slotStack.count < slotStack.maxStackSize) {
 				val spaceLeft = slotStack.maxStackSize - slotStack.count
-				val amountToMove = minOf(spaceLeft, remainder.count)
+				val amountToMove = minOf(spaceLeft, stack.count)
 
 				slotStack.grow(amountToMove)
-				remainder.shrink(amountToMove)
+				stack.shrink(amountToMove)
 				inventory.setChanged()
 			}
 		}
 
-		if (!remainder.isEmpty) {
+		if (!stack.isEmpty) {
 			for (i in 0 until inventory.containerSize) {
-				if (remainder.isEmpty) break
+				if (stack.isEmpty) break
 				val slotStack = inventory.getItem(i)
 
 				if (slotStack.isEmpty) {
-					inventory.setItem(i, remainder.copy())
-					remainder.count = 0
+					inventory.setItem(i, stack.copy())
+					stack.count = 0
 					inventory.setChanged()
 					break
 				}
 			}
 		}
-		return remainder
+		return stack
 	}
 }
