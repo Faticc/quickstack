@@ -47,16 +47,6 @@ object QuickStackClient : ClientModInitializer {
 					button.x = getScreenLeftPos(screen) + 128
 					button.y = getScreenTopPos(screen) + 61
 				}
-
-				ScreenEvents.afterExtract(screen).register { _, graphics, _, _, _ ->
-					val iconX = button.x + (button.width - 16) / 2
-					val iconY = button.y + (button.height - 16) / 2
-
-					graphics.pose().pushMatrix()
-					graphics.pose().translate(0.0f, -0.66f)
-					graphics.item(ItemStack(Items.CHEST), iconX, iconY)
-					graphics.pose().popMatrix()
-				}
 			}
 		}
 	}

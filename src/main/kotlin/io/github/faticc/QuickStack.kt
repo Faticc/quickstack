@@ -22,7 +22,7 @@ object QuickStack : ModInitializer {
 	const val SEARCH_RADIUS_BLOCKS = 16.0
 
 	override fun onInitialize() {
-		LOGGER.info("Initializing QuickStack mod (Chunk-Optimized)...")
+		LOGGER.info("Initializing QuickStack mod...")
 
 		PayloadTypeRegistry.serverboundPlay().register(QuickStackPacket.ID, QuickStackPacket.CODEC)
 
